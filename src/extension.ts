@@ -7,16 +7,26 @@ import { divisionToLatex } from './math/latex';
 import { scanJava } from './math/scan';
 import { findPowCalls, type PowMatch } from './math/pow';
 import { findExpressions, type ExpressionMatch } from './math/findExpressions';
+import { findForLoopSummations, type SumMatch } from './math/forLoopSum';
+import { findForLoopMappings, type MapMatch } from './math/forLoopMap';
 import katex from 'katex';
 
 let divisionDecorationType: vscode.TextEditorDecorationType | undefined;
 let expressionDecorationType: vscode.TextEditorDecorationType | undefined;
 let extensionRootUri: vscode.Uri | undefined;
 
+const SUPPORTED_LANGUAGE_IDS = new Set(['java', 'javascript', 'typescript', 'cpp']);
+
+function isSupportedLanguageId(languageId: string): boolean {
+	return SUPPORTED_LANGUAGE_IDS.has(languageId);
+}
+
 type AnyMatch =
 	| { kind: 'division'; range: vscode.Range; numerator: string; denominator: string }
 	| { kind: 'pow'; range: vscode.Range; latex: string; inlineText: string }
-	| { kind: 'expr'; range: vscode.Range; latex: string; inlineText: string };
+	| { kind: 'expr'; range: vscode.Range; latex: string; inlineText: string }
+	| { kind: 'sum'; range: vscode.Range; latex: string; inlineText: string }
+	| { kind: 'map'; range: vscode.Range; latex: string; inlineText: string };
 
 function pickLargestNonOverlapping(matches: AnyMatch[]): AnyMatch[] {
 	// Prefer outer ranges: sort by start asc, length desc.
@@ -65,17 +75,22 @@ type CachedMatches = {
 	divisions: DivisionMatch[];
 	powCalls: PowMatch[];
 	expressions: ExpressionMatch[];
+	sums: SumMatch[];
+	maps: MapMatch[];
 };
 
 const matchCache = new Map<string, CachedMatches>();
 
 function getConfig() {
 	const config = vscode.workspace.getConfiguration('inlinemath');
+	const previewScaleRaw = config.get<number>('preview.scale', 1.5);
+	const previewScale = Number.isFinite(previewScaleRaw) ? Math.min(4, Math.max(0.5, previewScaleRaw)) : 1.5;
 	return {
 		enabled: config.get<boolean>('enabled', true),
 		divisionCodeLens: config.get<boolean>('division.codeLens', true),
 		divisionPeekDefinition: config.get<boolean>('division.peekDefinition', true),
 		previewEnabled: config.get<boolean>('preview.enabled', true),
+		previewScale,
 		divisionInlineDecoration: config.get<boolean>('division.inlineDecoration', true),
 		divisionHoverStacked: config.get<boolean>('division.hoverStackedFraction', true),
 		divisionInlinePrefix: config.get<string>('division.inlinePrefix', '  ⟂  '),
@@ -87,6 +102,14 @@ function getConfig() {
 		powInlineDecoration: config.get<boolean>('pow.inlineDecoration', false),
 		powHoverLatex: config.get<boolean>('pow.hoverLatex', true),
 		powInlinePrefix: config.get<string>('pow.inlinePrefix', '  ≈  '),
+		sumCodeLens: config.get<boolean>('sum.codeLens', true),
+		sumInlineDecoration: config.get<boolean>('sum.inlineDecoration', false),
+		sumHoverLatex: config.get<boolean>('sum.hoverLatex', true),
+		sumInlinePrefix: config.get<string>('sum.inlinePrefix', '  ≈  '),
+		mapCodeLens: config.get<boolean>('map.codeLens', true),
+		mapInlineDecoration: config.get<boolean>('map.inlineDecoration', false),
+		mapHoverLatex: config.get<boolean>('map.hoverLatex', true),
+		mapInlinePrefix: config.get<string>('map.inlinePrefix', '  ≈  '),
 	};
 }
 
@@ -171,7 +194,7 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 	}
 
 	const config = getConfig();
-	if (!config.enabled || editor.document.languageId !== 'java') {
+	if (!config.enabled || !isSupportedLanguageId(editor.document.languageId)) {
 		clearDecorations(editor);
 		return;
 	}
@@ -187,18 +210,32 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 	let divisions: DivisionMatch[];
 	let powCalls: PowMatch[];
 	let expressions: ExpressionMatch[];
+	let sums: SumMatch[];
+	let maps: MapMatch[];
 	let maskedText: string;
 
 	if (cached && cached.version === editor.document.version) {
 		divisions = cached.divisions;
 		powCalls = cached.powCalls;
 		expressions = cached.expressions;
+		sums = cached.sums ?? findForLoopSummations(editor.document, cached.maskedText);
+		maps = cached.maps ?? findForLoopMappings(editor.document, cached.maskedText);
 		maskedText = cached.maskedText;
 	} else {
 		maskedText = scanJava(editor.document.getText()).maskedText;
 		divisions = findDivisions(editor.document);
 		powCalls = findPowCalls(editor.document, maskedText);
 		expressions = findExpressions(editor.document, maskedText);
+		try {
+			sums = findForLoopSummations(editor.document, maskedText);
+		} catch {
+			sums = [];
+		}
+		try {
+			maps = findForLoopMappings(editor.document, maskedText);
+		} catch {
+			maps = [];
+		}
 
 		// Keep all raw matches; we'll apply "largest only" per-surface to avoid clutter.
 
@@ -209,6 +246,8 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 			divisions,
 			powCalls,
 			expressions,
+			sums,
+			maps,
 		});
 	}
 
@@ -244,6 +283,26 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 			}))
 		);
 	}
+	if (config.sumInlineDecoration) {
+		inlineCandidates.push(
+			...sums.map((s) => ({
+				kind: 'sum' as const,
+				range: s.range,
+				latex: s.latex,
+				inlineText: s.inlineText,
+			}))
+		);
+	}
+	if (config.mapInlineDecoration) {
+		inlineCandidates.push(
+			...maps.map((m) => ({
+				kind: 'map' as const,
+				range: m.range,
+				latex: m.latex,
+				inlineText: m.inlineText,
+			}))
+		);
+	}
 	const inlineKept = pickLargestNonOverlapping(inlineCandidates);
 
 	// Division decorations
@@ -275,6 +334,16 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 				exprDecorations.push({
 					range: m.range,
 					renderOptions: { after: { contentText: `${config.powInlinePrefix}${m.inlineText}` } },
+				});
+			} else if (m.kind === 'sum') {
+				exprDecorations.push({
+					range: m.range,
+					renderOptions: { after: { contentText: `${config.sumInlinePrefix}${m.inlineText}` } },
+				});
+			} else if (m.kind === 'map') {
+				exprDecorations.push({
+					range: m.range,
+					renderOptions: { after: { contentText: `${config.mapInlinePrefix}${m.inlineText}` } },
 				});
 			}
 		}
@@ -317,6 +386,10 @@ function escapeHtml(text: string): string {
 		.replace(/'/g, '&#39;');
 }
 
+function makeNonce(): string {
+	return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+}
+
 function openMathPreviewLatex(title: string, latex: string) {
 	const config = getConfig();
 	if (!config.enabled || !config.previewEnabled) {
@@ -351,11 +424,25 @@ function openMathPreviewLatex(title: string, latex: string) {
 		title,
 		vscode.ViewColumn.Beside,
 		{
-			enableScripts: false,
+			enableScripts: true,
 			localResourceRoots: katexDistFsDir
 				? [vscode.Uri.file(katexDistFsDir), vscode.Uri.file(path.join(katexDistFsDir, 'fonts'))]
 				: [],
 		}
+	);
+
+	panel.webview.onDidReceiveMessage(
+		(msg: unknown) => {
+			if (!msg || typeof msg !== 'object') {
+				return;
+			}
+			const type = (msg as { type?: unknown }).type;
+			if (type === 'copyLatex') {
+				void vscode.env.clipboard.writeText(latex);
+				void vscode.window.setStatusBarMessage('InlineMath: LaTeX copied to clipboard', 1500);
+			}
+		},
+		undefined
 	);
 
 	const katexCssPath = katexDistFsDir ? vscode.Uri.file(path.join(katexDistFsDir, 'katex.min.css')) : undefined;
@@ -377,23 +464,45 @@ function openMathPreviewLatex(title: string, latex: string) {
 		katexCss = '';
 	}
 
+	const nonce = makeNonce();
+	const script = `
+			(function () {
+				const vscode = acquireVsCodeApi();
+				const btn = document.getElementById('copyLatex');
+				if (btn) {
+					btn.addEventListener('click', () => {
+						vscode.postMessage({ type: 'copyLatex' });
+					});
+				}
+			})();
+		`;
+
 	panel.webview.html = `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
-		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; font-src ${panel.webview.cspSource} data:;" />
+		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; font-src ${panel.webview.cspSource} data:; script-src 'nonce-${nonce}';" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <style>
 			${katexCss}
 			body { padding: 16px; }
+			/* Make math more readable by default; controlled by inlinemath.preview.scale */
+			.katex { font-size: ${config.previewScale}em; }
 			.katex-display { margin: 0; }
 			.hint { opacity: 0.75; font-family: var(--vscode-font-family); font-size: 12px; margin-top: 16px; }
       code { font-family: var(--vscode-editor-font-family); }
+			button { font-family: var(--vscode-font-family); }
     </style>
   </head>
   <body>
     ${htmlMath}
-		<div class="hint">LaTeX: <code>${escapeHtml(latex)}</code></div>
+		<div class="hint">
+			<div style="display:flex; align-items:center; gap: 12px;">
+				<button id="copyLatex" type="button">Copy LaTeX</button>
+				<div>LaTeX: <code>${escapeHtml(latex)}</code></div>
+			</div>
+		</div>
+		<script nonce="${nonce}">${script}</script>
   </body>
 </html>`;
 }
@@ -459,9 +568,41 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
+		vscode.languages.registerDefinitionProvider(
+			[{ language: 'javascript' }, { language: 'typescript' }, { language: 'cpp' }],
+			{
+				provideDefinition(document: vscode.TextDocument, position: vscode.Position) {
+					const config = getConfig();
+					if (!config.enabled || !config.divisionPeekDefinition) {
+						return;
+					}
+
+					const key = document.uri.toString();
+					const cached = matchCache.get(key);
+					const divisions = cached && cached.version === document.version ? cached.divisions : findDivisions(document);
+					const match = divisions.find((m) => m.range.contains(position));
+					if (!match) {
+						return;
+					}
+
+					const targetUri = toFractionUri(match);
+					return [
+						{
+							originSelectionRange: match.range,
+							targetUri,
+							targetRange: new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0)),
+							targetSelectionRange: new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0)),
+						},
+					] as vscode.LocationLink[];
+				},
+			}
+		)
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand('inlinemath.peekFraction', (range?: vscode.Range) => {
 			const editor = vscode.window.activeTextEditor;
-			if (!editor || editor.document.languageId !== 'java') {
+			if (!editor || !isSupportedLanguageId(editor.document.languageId)) {
 				return;
 			}
 			if (range instanceof vscode.Range) {
@@ -475,7 +616,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('inlinemath.openMathPreview', (numerator?: string, denominator?: string, range?: vscode.Range) => {
 			const editor = vscode.window.activeTextEditor;
-			if (!editor || editor.document.languageId !== 'java') {
+			if (!editor || !isSupportedLanguageId(editor.document.languageId)) {
 				return;
 			}
 
@@ -505,7 +646,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('inlinemath.openMathPreviewLatex', (latex?: string, title?: string) => {
 			const editor = vscode.window.activeTextEditor;
-			if (!editor || editor.document.languageId !== 'java') {
+			if (!editor || !isSupportedLanguageId(editor.document.languageId)) {
 				return;
 			}
 			if (typeof latex !== 'string' || !latex.trim()) {
@@ -516,7 +657,9 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.languages.registerCodeLensProvider({ language: 'java' }, new (class implements vscode.CodeLensProvider {
+		vscode.languages.registerCodeLensProvider(
+			[{ language: 'java' }, { language: 'javascript' }, { language: 'typescript' }, { language: 'cpp' }],
+			new (class implements vscode.CodeLensProvider {
 			public readonly onDidChangeCodeLenses = codeLensChanged.event;
 
 			provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -531,6 +674,24 @@ export function activate(context: vscode.ExtensionContext) {
 				const divisions = cached && cached.version === document.version ? cached.divisions : findDivisions(document);
 				const powCalls = cached && cached.version === document.version ? cached.powCalls : findPowCalls(document, maskedText);
 				let expressions = cached && cached.version === document.version ? cached.expressions : findExpressions(document, maskedText);
+				let sums: SumMatch[] = [];
+				try {
+					sums =
+						cached && cached.version === document.version
+							? (cached.sums ?? findForLoopSummations(document, cached.maskedText))
+							: findForLoopSummations(document, maskedText);
+				} catch {
+					sums = [];
+				}
+				let maps: MapMatch[] = [];
+				try {
+					maps =
+						cached && cached.version === document.version
+							? (cached.maps ?? findForLoopMappings(document, cached.maskedText))
+							: findForLoopMappings(document, maskedText);
+				} catch {
+					maps = [];
+				}
 
 				const lensCandidates: AnyMatch[] = [];
 				if (config.divisionCodeLens) {
@@ -563,6 +724,26 @@ export function activate(context: vscode.ExtensionContext) {
 						}))
 					);
 				}
+				if (config.sumCodeLens) {
+					lensCandidates.push(
+						...sums.map((s) => ({
+							kind: 'sum' as const,
+							range: s.range,
+							latex: s.latex,
+							inlineText: s.inlineText,
+						}))
+					);
+				}
+				if (config.mapCodeLens) {
+					lensCandidates.push(
+						...maps.map((m) => ({
+							kind: 'map' as const,
+							range: m.range,
+							latex: m.latex,
+							inlineText: m.inlineText,
+						}))
+					);
+				}
 				const lensKept = pickLargestNonOverlapping(lensCandidates);
 
 				const lenses: vscode.CodeLens[] = [];
@@ -588,7 +769,9 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.languages.registerHoverProvider({ language: 'java' }, {
+		vscode.languages.registerHoverProvider(
+			[{ language: 'java' }, { language: 'javascript' }, { language: 'typescript' }, { language: 'cpp' }],
+			{
 			provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
 				const config = getConfig();
 				if (!config.enabled) {
@@ -601,6 +784,24 @@ export function activate(context: vscode.ExtensionContext) {
 				const divisions = cached && cached.version === document.version ? cached.divisions : findDivisions(document);
 				const powCalls = cached && cached.version === document.version ? cached.powCalls : findPowCalls(document, maskedText);
 				const expressions = cached && cached.version === document.version ? cached.expressions : findExpressions(document, maskedText);
+				let sums: SumMatch[] = [];
+				try {
+					sums =
+						cached && cached.version === document.version
+							? (cached.sums ?? findForLoopSummations(document, cached.maskedText))
+							: findForLoopSummations(document, maskedText);
+				} catch {
+					sums = [];
+				}
+				let maps: MapMatch[] = [];
+				try {
+					maps =
+						cached && cached.version === document.version
+							? (cached.maps ?? findForLoopMappings(document, cached.maskedText))
+							: findForLoopMappings(document, maskedText);
+				} catch {
+					maps = [];
+				}
 
 				// Hover: choose the largest enabled match that contains the position.
 				const hoverCandidates: AnyMatch[] = [];
@@ -621,6 +822,26 @@ export function activate(context: vscode.ExtensionContext) {
 							range: e.range,
 							latex: e.latex,
 							inlineText: e.inlineText,
+						}))
+					);
+				}
+				if (config.sumHoverLatex) {
+					hoverCandidates.push(
+						...sums.map((s) => ({
+							kind: 'sum' as const,
+							range: s.range,
+							latex: s.latex,
+							inlineText: s.inlineText,
+						}))
+					);
+				}
+				if (config.mapHoverLatex) {
+					hoverCandidates.push(
+						...maps.map((m) => ({
+							kind: 'map' as const,
+							range: m.range,
+							latex: m.latex,
+							inlineText: m.inlineText,
 						}))
 					);
 				}
@@ -658,7 +879,10 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.window.onDidChangeActiveTextEditor((editor: vscode.TextEditor | undefined) => updateForEditor(editor))
+		vscode.window.onDidChangeActiveTextEditor((editor: vscode.TextEditor | undefined) => {
+			updateForEditor(editor);
+			codeLensChanged.fire();
+		})
 	);
 
 	context.subscriptions.push(

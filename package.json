@@ -11,7 +11,10 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:java"
+    "onLanguage:java",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:cpp"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -51,6 +54,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the KaTeX-based Math Preview webview."
+        },
+        "inlinemath.preview.scale": {
+          "type": "number",
+          "default": 1.5,
+          "description": "Scale factor for KaTeX rendering in Math Preview (1.0 = normal, 1.5 = 50% bigger)."
         },
         "inlinemath.division.inlineDecoration": {
           "type": "boolean",
@@ -106,6 +114,46 @@
           "type": "string",
           "default": "  ≈  ",
           "description": "Prefix shown before the inline Math.pow decoration."
+        },
+        "inlinemath.sum.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens entries for simple for-loop summations (rendered as a \u03a3 summation)."
+        },
+        "inlinemath.sum.inlineDecoration": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show an inline (after) decoration for detected for-loop summations."
+        },
+        "inlinemath.sum.hoverLatex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a hover with a lightweight preview and LaTeX for detected for-loop summations."
+        },
+        "inlinemath.sum.inlinePrefix": {
+          "type": "string",
+          "default": "  ≈  ",
+          "description": "Prefix shown before the inline summation decoration."
+        },
+        "inlinemath.map.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens entries for simple for-loops that assign to an indexed output (e.g. answer[i] = f(i))."
+        },
+        "inlinemath.map.inlineDecoration": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show an inline (after) decoration for detected indexed assignments in for-loops."
+        },
+        "inlinemath.map.hoverLatex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a hover with a lightweight preview and LaTeX for detected indexed assignments in for-loops."
+        },
+        "inlinemath.map.inlinePrefix": {
+          "type": "string",
+          "default": "  ≈  ",
+          "description": "Prefix shown before the inline indexed-assignment decoration."
         }
       }
     }

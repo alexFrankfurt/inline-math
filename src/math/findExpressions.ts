@@ -10,7 +10,7 @@ export type ExpressionMatch = {
 };
 
 function isStartChar(ch: string): boolean {
-	return /[A-Za-z0-9_\(\{\+\-]/.test(ch);
+	return /[A-Za-z0-9_\(\{\[\+\-]/.test(ch);
 }
 
 function isBoundaryChar(ch: string): boolean {
@@ -37,6 +37,13 @@ export function findExpressions(document: vscode.TextDocument, maskedText: strin
 
 		const parsed = parseExpressionAt(maskedText, i);
 		if (!parsed) {
+			i++;
+			continue;
+		}
+
+		// Avoid matching outer syntactic constructs like calls/new as "the expression";
+		// we want the inner arithmetic (e.g. Float32Array(this.shape[0] * ...)).
+		if (parsed.expr.kind === 'call' || parsed.expr.kind === 'new') {
 			i++;
 			continue;
 		}
