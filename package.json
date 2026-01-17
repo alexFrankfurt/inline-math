@@ -23,6 +23,10 @@
       {
         "command": "inlinemath.openMathPreview",
         "title": "InlineMath: Open Math Preview"
+      },
+      {
+        "command": "inlinemath.openMathPreviewLatex",
+        "title": "InlineMath: Open Math Preview (LaTeX)"
       }
     ],
     "configuration": {
@@ -50,7 +54,7 @@
         },
         "inlinemath.division.inlineDecoration": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Show an inline (after) decoration for simple divisions like a/b."
         },
         "inlinemath.division.hoverStackedFraction": {
@@ -62,6 +66,46 @@
           "type": "string",
           "default": "  ⟂  ",
           "description": "Prefix shown before the inline fraction decoration."
+        },
+        "inlinemath.expression.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens entries for simple expressions using +, -, *, / and grouping with () or {}."
+        },
+        "inlinemath.expression.inlineDecoration": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show an inline (after) decoration for expressions (e.g., a+b*c)."
+        },
+        "inlinemath.expression.hoverLatex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a hover with a lightweight preview and LaTeX for expressions."
+        },
+        "inlinemath.expression.inlinePrefix": {
+          "type": "string",
+          "default": "  ≈  ",
+          "description": "Prefix shown before the inline expression decoration."
+        },
+        "inlinemath.pow.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens entries for qualified Math.pow(base, exp) calls (rendered as exponentiation)."
+        },
+        "inlinemath.pow.inlineDecoration": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show an inline (after) decoration for qualified Math.pow(base, exp) calls."
+        },
+        "inlinemath.pow.hoverLatex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a hover with a lightweight preview and LaTeX for qualified Math.pow(base, exp) calls."
+        },
+        "inlinemath.pow.inlinePrefix": {
+          "type": "string",
+          "default": "  ≈  ",
+          "description": "Prefix shown before the inline Math.pow decoration."
         }
       }
     }

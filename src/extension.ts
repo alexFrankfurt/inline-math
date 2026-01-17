@@ -4,15 +4,67 @@ import * as path from 'path';
 import { findDivisions, type DivisionMatch } from './math/division';
 import { buildStackedFraction } from './math/stackedFraction';
 import { divisionToLatex } from './math/latex';
+import { scanJava } from './math/scan';
+import { findPowCalls, type PowMatch } from './math/pow';
+import { findExpressions, type ExpressionMatch } from './math/findExpressions';
 import katex from 'katex';
 
 let divisionDecorationType: vscode.TextEditorDecorationType | undefined;
+let expressionDecorationType: vscode.TextEditorDecorationType | undefined;
 let extensionRootUri: vscode.Uri | undefined;
+
+type AnyMatch =
+	| { kind: 'division'; range: vscode.Range; numerator: string; denominator: string }
+	| { kind: 'pow'; range: vscode.Range; latex: string; inlineText: string }
+	| { kind: 'expr'; range: vscode.Range; latex: string; inlineText: string };
+
+function pickLargestNonOverlapping(matches: AnyMatch[]): AnyMatch[] {
+	// Prefer outer ranges: sort by start asc, length desc.
+	const withOffsets = matches
+		.map((m) => ({
+			m,
+			start: m.range.start,
+			end: m.range.end,
+			// VS Code Positions are comparable via isBefore/isEqual helpers.
+		}))
+		.sort((a, b) => {
+			if (a.start.line !== b.start.line) return a.start.line - b.start.line;
+			if (a.start.character !== b.start.character) return a.start.character - b.start.character;
+			// Longer first if same start
+			if (a.end.line !== b.end.line) return b.end.line - a.end.line;
+			return b.end.character - a.end.character;
+		});
+
+	const kept: AnyMatch[] = [];
+	for (const item of withOffsets) {
+		const candidate = item.m;
+		let overlaps = false;
+		for (const k of kept) {
+			if (k.range.intersection(candidate.range)) {
+				// If candidate is fully contained, drop it.
+				if (k.range.contains(candidate.range)) {
+					overlaps = true;
+					break;
+				}
+				// If there's any overlap at all, also drop to avoid clutter.
+				overlaps = true;
+				break;
+			}
+		}
+		if (!overlaps) {
+			kept.push(candidate);
+		}
+	}
+	return kept;
+}
 
 type CachedMatches = {
 	docUri: string;
 	version: number;
+	maskedText: string;
 	divisions: DivisionMatch[];
+	powCalls: PowMatch[];
+	expressions: ExpressionMatch[];
 };
 
 const matchCache = new Map<string, CachedMatches>();
@@ -27,6 +79,14 @@ function getConfig() {
 		divisionInlineDecoration: config.get<boolean>('division.inlineDecoration', true),
 		divisionHoverStacked: config.get<boolean>('division.hoverStackedFraction', true),
 		divisionInlinePrefix: config.get<string>('division.inlinePrefix', '  ⟂  '),
+		expressionCodeLens: config.get<boolean>('expression.codeLens', true),
+		expressionInlineDecoration: config.get<boolean>('expression.inlineDecoration', false),
+		expressionHoverLatex: config.get<boolean>('expression.hoverLatex', true),
+		expressionInlinePrefix: config.get<string>('expression.inlinePrefix', '  ≈  '),
+		powCodeLens: config.get<boolean>('pow.codeLens', true),
+		powInlineDecoration: config.get<boolean>('pow.inlineDecoration', false),
+		powHoverLatex: config.get<boolean>('pow.hoverLatex', true),
+		powInlinePrefix: config.get<string>('pow.inlinePrefix', '  ≈  '),
 	};
 }
 
@@ -44,11 +104,27 @@ function ensureDecorationType() {
 	});
 }
 
-function clearDecorations(editor: vscode.TextEditor) {
-	if (!divisionDecorationType) {
+function ensureExpressionDecorationType() {
+	if (expressionDecorationType) {
 		return;
 	}
-	editor.setDecorations(divisionDecorationType, []);
+
+	expressionDecorationType = vscode.window.createTextEditorDecorationType({
+		after: {
+			color: new vscode.ThemeColor('editorCodeLens.foreground'),
+			fontStyle: 'italic',
+			margin: '0 0 0 1.5em',
+		},
+	});
+}
+
+function clearDecorations(editor: vscode.TextEditor) {
+	if (divisionDecorationType) {
+		editor.setDecorations(divisionDecorationType, []);
+	}
+	if (expressionDecorationType) {
+		editor.setDecorations(expressionDecorationType, []);
+	}
 }
 
 function formatInlineFraction(numerator: string, denominator: string, prefix: string): string {
@@ -104,33 +180,106 @@ function updateForEditor(editor: vscode.TextEditor | undefined) {
 	if (!divisionDecorationType) {
 		return;
 	}
+	ensureExpressionDecorationType();
 
 	const key = editor.document.uri.toString();
 	const cached = matchCache.get(key);
 	let divisions: DivisionMatch[];
+	let powCalls: PowMatch[];
+	let expressions: ExpressionMatch[];
+	let maskedText: string;
 
 	if (cached && cached.version === editor.document.version) {
 		divisions = cached.divisions;
+		powCalls = cached.powCalls;
+		expressions = cached.expressions;
+		maskedText = cached.maskedText;
 	} else {
+		maskedText = scanJava(editor.document.getText()).maskedText;
 		divisions = findDivisions(editor.document);
-		matchCache.set(key, { docUri: key, version: editor.document.version, divisions });
+		powCalls = findPowCalls(editor.document, maskedText);
+		expressions = findExpressions(editor.document, maskedText);
+
+		// Keep all raw matches; we'll apply "largest only" per-surface to avoid clutter.
+
+		matchCache.set(key, {
+			docUri: key,
+			version: editor.document.version,
+			maskedText,
+			divisions,
+			powCalls,
+			expressions,
+		});
 	}
 
+	// Inline decorations: pick largest non-overlapping matches among enabled kinds.
+	const inlineCandidates: AnyMatch[] = [];
+	if (config.divisionInlineDecoration) {
+		inlineCandidates.push(
+			...divisions.map((d) => ({
+				kind: 'division' as const,
+				range: d.range,
+				numerator: d.numerator,
+				denominator: d.denominator,
+			}))
+		);
+	}
+	if (config.powInlineDecoration) {
+		inlineCandidates.push(
+			...powCalls.map((p) => ({
+				kind: 'pow' as const,
+				range: p.range,
+				latex: p.latex,
+				inlineText: p.inlineText,
+			}))
+		);
+	}
+	if (config.expressionInlineDecoration) {
+		inlineCandidates.push(
+			...expressions.map((e) => ({
+				kind: 'expr' as const,
+				range: e.range,
+				latex: e.latex,
+				inlineText: e.inlineText,
+			}))
+		);
+	}
+	const inlineKept = pickLargestNonOverlapping(inlineCandidates);
+
+	// Division decorations
 	if (!config.divisionInlineDecoration) {
-		clearDecorations(editor);
-		return;
+		editor.setDecorations(divisionDecorationType, []);
+	} else {
+		const keptDivisions = inlineKept.filter((m): m is Extract<AnyMatch, { kind: 'division' }> => m.kind === 'division');
+		const decorations: vscode.DecorationOptions[] = keptDivisions.map((m) => ({
+			range: m.range,
+			renderOptions: {
+				after: {
+					contentText: formatInlineFraction(m.numerator, m.denominator, config.divisionInlinePrefix),
+				},
+			},
+		}));
+		editor.setDecorations(divisionDecorationType, decorations);
 	}
 
-	const decorations: vscode.DecorationOptions[] = divisions.map((m) => ({
-		range: m.range,
-		renderOptions: {
-			after: {
-				contentText: formatInlineFraction(m.numerator, m.denominator, config.divisionInlinePrefix),
-			},
-		},
-	}));
-
-	editor.setDecorations(divisionDecorationType, decorations);
+	// Expression/pow decorations
+	if (expressionDecorationType) {
+		const exprDecorations: vscode.DecorationOptions[] = [];
+		for (const m of inlineKept) {
+			if (m.kind === 'expr') {
+				exprDecorations.push({
+					range: m.range,
+					renderOptions: { after: { contentText: `${config.expressionInlinePrefix}${m.inlineText}` } },
+				});
+			} else if (m.kind === 'pow') {
+				exprDecorations.push({
+					range: m.range,
+					renderOptions: { after: { contentText: `${config.powInlinePrefix}${m.inlineText}` } },
+				});
+			}
+		}
+		editor.setDecorations(expressionDecorationType, exprDecorations);
+	}
 }
 
 const FRACTION_SCHEME = 'inlinemath-fraction';
@@ -168,7 +317,7 @@ function escapeHtml(text: string): string {
 		.replace(/'/g, '&#39;');
 }
 
-function openMathPreview(numerator: string, denominator: string) {
+function openMathPreviewLatex(title: string, latex: string) {
 	const config = getConfig();
 	if (!config.enabled || !config.previewEnabled) {
 		void vscode.window.showInformationMessage('InlineMath preview is disabled (see inlinemath.preview.enabled).');
@@ -176,7 +325,6 @@ function openMathPreview(numerator: string, denominator: string) {
 	}
 	// Note: webviews are their own sandbox; avoid assuming cwd/workspace layout.
 
-	const latex = divisionToLatex(numerator, denominator);
 	let htmlMath = '';
 	try {
 		htmlMath = katex.renderToString(latex, {
@@ -200,7 +348,7 @@ function openMathPreview(numerator: string, denominator: string) {
 
 	const panel = vscode.window.createWebviewPanel(
 		'inlinemath.preview',
-		`InlineMath: ${numerator}/${denominator}`,
+		title,
 		vscode.ViewColumn.Beside,
 		{
 			enableScripts: false,
@@ -248,6 +396,11 @@ function openMathPreview(numerator: string, denominator: string) {
 		<div class="hint">LaTeX: <code>${escapeHtml(latex)}</code></div>
   </body>
 </html>`;
+}
+
+function openDivisionMathPreview(numerator: string, denominator: string) {
+	const latex = divisionToLatex(numerator, denominator);
+	openMathPreviewLatex(`InlineMath: ${numerator}/${denominator}`, latex);
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -327,7 +480,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (typeof numerator === 'string' && typeof denominator === 'string') {
-				openMathPreview(numerator, denominator);
+				openDivisionMathPreview(numerator, denominator);
 				return;
 			}
 
@@ -345,7 +498,20 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!match) {
 				return;
 			}
-			openMathPreview(match.numerator, match.denominator);
+			openDivisionMathPreview(match.numerator, match.denominator);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('inlinemath.openMathPreviewLatex', (latex?: string, title?: string) => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor || editor.document.languageId !== 'java') {
+				return;
+			}
+			if (typeof latex !== 'string' || !latex.trim()) {
+				return;
+			}
+			openMathPreviewLatex(title && title.trim() ? title : 'InlineMath: Math Preview', latex);
 		})
 	);
 
@@ -355,28 +521,66 @@ export function activate(context: vscode.ExtensionContext) {
 
 			provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
 				const config = getConfig();
-				if (!config.enabled || !config.divisionCodeLens) {
+				if (!config.enabled) {
 					return [];
 				}
 
 				const key = document.uri.toString();
 				const cached = matchCache.get(key);
+				const maskedText = cached && cached.version === document.version ? cached.maskedText : scanJava(document.getText()).maskedText;
 				const divisions = cached && cached.version === document.version ? cached.divisions : findDivisions(document);
+				const powCalls = cached && cached.version === document.version ? cached.powCalls : findPowCalls(document, maskedText);
+				let expressions = cached && cached.version === document.version ? cached.expressions : findExpressions(document, maskedText);
+
+				const lensCandidates: AnyMatch[] = [];
+				if (config.divisionCodeLens) {
+					lensCandidates.push(
+						...divisions.map((d) => ({
+							kind: 'division' as const,
+							range: d.range,
+							numerator: d.numerator,
+							denominator: d.denominator,
+						}))
+					);
+				}
+				if (config.powCodeLens) {
+					lensCandidates.push(
+						...powCalls.map((p) => ({
+							kind: 'pow' as const,
+							range: p.range,
+							latex: p.latex,
+							inlineText: p.inlineText,
+						}))
+					);
+				}
+				if (config.expressionCodeLens) {
+					lensCandidates.push(
+						...expressions.map((e) => ({
+							kind: 'expr' as const,
+							range: e.range,
+							latex: e.latex,
+							inlineText: e.inlineText,
+						}))
+					);
+				}
+				const lensKept = pickLargestNonOverlapping(lensCandidates);
 
 				const lenses: vscode.CodeLens[] = [];
-				for (const m of divisions) {
-					// CodeLens title is single-line; keep it readable.
-					lenses.push(new vscode.CodeLens(m.range, {
-						title: `${m.numerator} / ${m.denominator}`,
-						command: 'inlinemath.peekFraction',
-						arguments: [m.range],
-					}));
-
-					lenses.push(new vscode.CodeLens(m.range, {
-						title: 'Math Preview',
-						command: 'inlinemath.openMathPreview',
-						arguments: [m.numerator, m.denominator, m.range],
-					}));
+				for (const m of lensKept) {
+					if (m.kind === 'division') {
+						lenses.push(new vscode.CodeLens(m.range, {
+							title: `Math Preview: ${m.numerator}/${m.denominator}`,
+							command: 'inlinemath.openMathPreview',
+							arguments: [m.numerator, m.denominator, m.range],
+						}));
+					} else {
+						const title = m.inlineText.length > 60 ? `${m.inlineText.slice(0, 57)}...` : m.inlineText;
+						lenses.push(new vscode.CodeLens(m.range, {
+							title: `Math Preview: ${title}`,
+							command: 'inlinemath.openMathPreviewLatex',
+							arguments: [m.latex, `InlineMath: ${title}`],
+						}));
+					}
 				}
 				return lenses;
 			}
@@ -385,26 +589,70 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.languages.registerHoverProvider({ language: 'java' }, {
-			provideHover(document: vscode.TextDocument, position: vscode.Position) {
+			provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
 				const config = getConfig();
-				if (!config.enabled || !config.divisionHoverStacked) {
-					return;
+				if (!config.enabled) {
+					return undefined;
 				}
 
 				const key = document.uri.toString();
 				const cached = matchCache.get(key);
+				const maskedText = cached && cached.version === document.version ? cached.maskedText : scanJava(document.getText()).maskedText;
 				const divisions = cached && cached.version === document.version ? cached.divisions : findDivisions(document);
+				const powCalls = cached && cached.version === document.version ? cached.powCalls : findPowCalls(document, maskedText);
+				const expressions = cached && cached.version === document.version ? cached.expressions : findExpressions(document, maskedText);
 
-				const match = divisions.find((m) => m.range.contains(position));
-				if (!match) {
-					return;
+				// Hover: choose the largest enabled match that contains the position.
+				const hoverCandidates: AnyMatch[] = [];
+				if (config.powHoverLatex) {
+					hoverCandidates.push(
+						...powCalls.map((p) => ({
+							kind: 'pow' as const,
+							range: p.range,
+							latex: p.latex,
+							inlineText: p.inlineText,
+						}))
+					);
+				}
+				if (config.expressionHoverLatex) {
+					hoverCandidates.push(
+						...expressions.map((e) => ({
+							kind: 'expr' as const,
+							range: e.range,
+							latex: e.latex,
+							inlineText: e.inlineText,
+						}))
+					);
+				}
+				if (config.divisionHoverStacked) {
+					hoverCandidates.push(
+						...divisions.map((d) => ({
+							kind: 'division' as const,
+							range: d.range,
+							numerator: d.numerator,
+							denominator: d.denominator,
+						}))
+					);
 				}
 
-				const stacked = buildStackedFraction(match.numerator, match.denominator);
+				const atPos = hoverCandidates.filter((m) => m.range.contains(position));
+				const kept = pickLargestNonOverlapping(atPos);
+				const best = kept.find((m) => m.range.contains(position));
+				if (!best) {
+					return undefined;
+				}
+				if (best.kind === 'division') {
+					const stacked = buildStackedFraction(best.numerator, best.denominator);
+					const md = new vscode.MarkdownString();
+					md.appendCodeblock(stacked, 'text');
+					md.isTrusted = false;
+					return new vscode.Hover(md, best.range);
+				}
 				const md = new vscode.MarkdownString();
-				md.appendCodeblock(stacked, 'text');
+				md.appendCodeblock(best.inlineText, 'text');
+				md.appendCodeblock(`LaTeX: ${best.latex}`, 'text');
 				md.isTrusted = false;
-				return new vscode.Hover(md, match.range);
+				return new vscode.Hover(md, best.range);
 			},
 		})
 	);
@@ -440,5 +688,7 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
 	divisionDecorationType?.dispose();
 	divisionDecorationType = undefined;
+	expressionDecorationType?.dispose();
+	expressionDecorationType = undefined;
 	matchCache.clear();
 }

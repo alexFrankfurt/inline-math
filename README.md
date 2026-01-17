@@ -4,10 +4,17 @@ A minimal VS Code extension that shows lightweight math overlays for Java code.
 
 Currently implemented:
 - Detects simple divisions like `a/b` or `3/4`
-- Shows a subtle inline decoration after the expression (e.g. `5/10` → `⁵⁄₁₀`)
+- Can show a subtle inline decoration after the expression (e.g. `5/10` → `⁵⁄₁₀`) (off by default)
 - Shows a stacked two-line fraction on hover
 - Adds a CodeLens and Peek Definition view for a stacked fraction
 - Adds a KaTeX-based Math Preview webview for reliable rendering
+
+Also supported:
+- Detects simple arithmetic expressions using `+`, `-`, `*`, `/` and grouping with `(...)` or `{...}` (in Java code, not in strings/comments)
+- Detects qualified `Math.pow(base, exp)` calls (including `java.lang.Math.pow`) and renders them as exponentiation in Math Preview
+
+Notes:
+- To avoid Java XOR confusion, `^` is intentionally *not* treated as exponentiation input.
 
 ## Run locally
 
@@ -22,6 +29,14 @@ Currently implemented:
 - `inlinemath.division.inlineDecoration`
 - `inlinemath.division.hoverStackedFraction`
 - `inlinemath.division.inlinePrefix`
+- `inlinemath.expression.codeLens`
+- `inlinemath.expression.inlineDecoration`
+- `inlinemath.expression.hoverLatex`
+- `inlinemath.expression.inlinePrefix`
+- `inlinemath.pow.codeLens`
+- `inlinemath.pow.inlineDecoration`
+- `inlinemath.pow.hoverLatex`
+- `inlinemath.pow.inlinePrefix`
 
 ## Notes on LaTeX in Peek
 
