@@ -25,6 +25,9 @@ Notes:
 - To avoid Java XOR confusion, `^` is intentionally *not* treated as exponentiation input.
 - Math Preview includes a **Copy LaTeX** button.
 
+## Presentation
+![presentation](image.png)
+
 ## Run locally
 
 1. `npm install`
