@@ -1,0 +1,82 @@
+{
+  "name": "inlinemath",
+  "displayName": "Inline Math Overlay",
+  "description": "Shows lightweight math overlays for Java code (starting with division).",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:java"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "inlinemath.peekFraction",
+        "title": "InlineMath: Peek Fraction"
+      },
+      {
+        "command": "inlinemath.openMathPreview",
+        "title": "InlineMath: Open Math Preview"
+      }
+    ],
+    "configuration": {
+      "title": "InlineMath",
+      "properties": {
+        "inlinemath.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable InlineMath overlays."
+        },
+        "inlinemath.division.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a CodeLens above simple divisions like a/b."
+        },
+        "inlinemath.division.peekDefinition": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Peek Definition for divisions (opens a virtual stacked fraction view)."
+        },
+        "inlinemath.preview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the KaTeX-based Math Preview webview."
+        },
+        "inlinemath.division.inlineDecoration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an inline (after) decoration for simple divisions like a/b."
+        },
+        "inlinemath.division.hoverStackedFraction": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a stacked two-line fraction in hover for simple divisions like a/b."
+        },
+        "inlinemath.division.inlinePrefix": {
+          "type": "string",
+          "default": "  ⟂  ",
+          "description": "Prefix shown before the inline fraction decoration."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "katex": "^0.16.11"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5.4"
+  }
+}
